@@ -1,0 +1,1255 @@
+<?php
+
+function bat_menu() {
+  $items = array();
+  
+  $items['admin/settings/bat-security-settings'] = array(
+    'title' => 'HMS Blocks block access configuration',
+    'description' => 'Configure the access settings for individual blocks.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('bat_security_settings'),
+    'access callback' => 'user_access',
+    'access arguments' => array('administer site configuration'),
+  );
+  
+  
+  $items['bat-add-wysiwyg'] = array(
+    'page callback' => 'bat_add_wysiwyg',
+    'page arguments' => array('bat_security_settings'),
+    'access callback' => 'user_access',
+    'access arguments' => array('add wysiwyg blocks'),
+  );
+  
+  
+  return $items;
+}
+
+function bat_add_wysiwyg() {
+  if(!$_POST['content'] or !$_POST['title']) {
+    exit();
+  }
+  //create new node
+  global $user;
+  $obj = new stdClass();
+  $obj->wid = null;
+  //auto increment doesn't work on drupal 6
+  $max = db_result(db_query("SELECT MAX(wid) FROM {bat_wysiwyg}"));
+  $max = $max + 1;
+  $obj->wid = $max;
+  $obj->uid = $user->uid;
+  $obj->title = $_POST['title'];
+  $obj->admin_title = $_POST['admin_title'];
+  $obj->hide_title = $_POST['hide_title'];
+  $obj->css_class = $_POST['css_class'];
+  $obj->content = $_POST['content'];
+  drupal_write_record("bat_wysiwyg", $obj);
+  print($obj->wid);
+  exit();
+}
+
+function bat_block($op = 'list', $delta = 0, $edit = array()) {
+  
+  
+  if ($op == 'list') {
+    
+    // Fetch all nodes of this type, excluding translations.
+    $result = db_query("SELECT  wid, title, admin_title FROM {bat_wysiwyg}");
+    while ($row = db_fetch_object($result)) {
+      $title = $row->title;
+      if($row->admin_title) {
+        $title = $row->admin_title;
+      }
+      $blocks[$row->wid] = array('info' => $title .' ( WYSIWYG )');
+    }       
+        
+
+    return $blocks;
+  }
+  
+  elseif ($op == 'view') {
+    
+    $result = db_query("SELECT * FROM {bat_wysiwyg} WHERE wid=%d LIMIT 1", $delta);
+    $block = db_fetch_array($result);
+    if(!$block['wid']) {
+      return;
+    }
+    
+
+    // Set a flag so that themes have more context.
+    $block['bat_block'] = TRUE;
+    
+    if(!$block['hide_title'])
+      $block['subject'] = $block['title'];
+    else  
+      $block['subject'] = '';
+      
+    if($block['css_class']) {
+      $block['extra_classes'] = " " . $block['css_class'];
+    }
+    
+    $block['content'] = $block['content'];
+    return $block;
+  }
+}
+
+
+function bat_update_db_block_bid() {
+  
+  $sql = "SELECT s.*
+    FROM {bat} s
+    WHERE 1=1
+    ";
+
+  /* $result = db_query($sql, $node->nid);
+  while ($block = db_fetch_object($result)) {
+    db_query("UPDATE bat SET bid='%s' WHERE module='%s' AND delta='%s' AND nid=%d", $block->module . "_" . $block->delta, $block->module, $block->delta, $block->nid);
+  } */
+  
+  //variable_set("bat_default_blocks_gateway", array());    
+  $node_menu_blocks = variable_get('bat_menu_blocks', array() ); 
+  foreach($node_menu_blocks as $nid =>  $node_blocks) {
+    foreach($node_blocks as $bid =>  $menu_block) {
+      $node_blocks[$bid]->bid = $bid;
+    }
+    $node_menu_blocks[$nid] = $node_blocks;
+  }
+  $node_menu_blocks = variable_set('bat_menu_blocks', $node_menu_blocks ); 
+  
+      
+  print("done");
+  exit();
+}
+
+define('BLOCK_NODE_TYPE', 1);
+define('BLOCK_MENU_CHILD', 2);
+define('BLOCK_MENU_DESCENDANT', 101);
+define('BLOCK_NODE_DESCENDANT', 100);
+define('BLOCK_GLOBAL_MODULE_EXCLUDE', 'system,menu,user,node,comment,google_appliance,block,megamenu');
+
+
+function bat_defaults() { 
+  $defaults = array();
+  $defaults['regions'] =
+  array(
+    'node_top',
+    'node_bottom',
+    'node_right',
+    //'content_bottom',
+    'content_top',
+  );  
+  return $defaults;
+}
+/**
+ * Implement hook_perm().
+ * @link http://api.drupal.org/api/function/hook_perm/6
+ */
+function bat_perm() {
+  return array('administer bat', 'add wysiwyg blocks', 'edit bat');
+}
+
+/**
+ * Implement hook_nodeapi().
+ * @link http://api.drupal.org/api/function/hook_nodeapi/6
+ */
+function bat_nodeapi(&$node, $op, $teaser = NULL, $arg4 = NULL) {
+
+
+  static $blocks;
+  
+  switch ($op) {
+    
+    case 'load':
+    case 'prepare':
+    case 'view': 
+      if($teaser)
+        return;      
+      if( ($op == 'load' and $teaser) or (arg(0) != 'node') or $node->build_mode == 'cck_blocks' )
+        return;
+        
+      if( (arg(0) == 'node' and is_numeric(arg(1))) and arg(1) != $node->nid) //only load for the node being viewed
+        return;
+      
+          
+      
+      if(!isset($blocks)) {
+        
+        $settings = bat_node_type_settings($node->type);
+        if (!$settings->enabled)
+          $blocks = null;          
+          
+          
+          
+        $blocks = array(
+          'blocks' => bat_node_load_blocks($node, $settings),
+          'settings' => $settings,
+        );
+        
+        
+        
+      } else {
+        return;
+      }
+      
+      
+      $node->bat = $blocks;
+      
+      break;
+    
+      
+    
+
+    case 'update':
+    case 'insert':
+      
+      if ($node->bat && !empty($node->bat['blocks']) and user_access('edit bat')) {
+       /*  foreach($_POST['bat_blocks']['blocks'] as $bid => $block) {
+          
+          if(!isset($node->bat['blocks'][$bid])) {
+            print($bid);
+            print_r($block);
+            $node->bat['blocks'][$bid] = $block;
+            print_r($node->bat['blocks']);
+          }
+        } */
+                
+        //add wysiwyg blocks
+        if(isset($_POST['bat_blocks'])) { 
+          foreach($_POST['bat_blocks']['blocks'] as $bid => $block) {
+            
+            //if(!isset($node->bat['blocks'][$bid])) {
+              $block['cache'] = 0x0008; //always cache for wysiwyg
+              $block['bid'] = $bid;
+              if(!$block['list_type']) {
+                $block['list_type'] = 0;
+              }
+              $block['bid'] = str_replace('hms_nodeblocks_', '', $bid);
+              $node->bat['blocks'][$bid] = $block;
+              
+            //}
+            
+          }
+        }
+        bat_node_save_blocks_meta($node);
+        bat_node_save_blocks($node);
+      }
+    break;
+      
+    case 'delete':
+      db_query("DELETE FROM {bat} WHERE nid = %d", $node->nid);
+    break;
+  }
+}
+
+/**
+ * Implement hook_theme().
+ * @link http://api.drupal.org/api/function/hook_theme/6
+ */
+function bat_theme() {
+  return array(
+    'bat_fieldset' => array(
+      'template' => 'bat-fieldset',
+      'arguments' => array('form' => NULL),
+    ),
+  );
+}
+
+/**
+ * Implement hook_form_alter().
+ */
+function bat_form_alter(&$form, &$form_state, $form_id) {
+
+  // Add a fieldset to the node type form in which admins can enable or disable bat per content type.
+  if ($form_id == 'node_type_form') {
+
+    module_load_include('inc', 'bat', 'bat.admin');
+    bat_node_type_form($form, $form_state);
+    //array_unshift($form['#submit'],'bat_node_type_form_submit');
+    array_push($form['#submit'],'bat_node_type_form_submit');
+  }
+
+  // Add the bat fieldset to the node edit form if enabled for this content type.
+  if ($form['#node'] && ($form_id == $form['#node']->type .'_node_form')) {
+    
+    bat_node_edit_after_build($form, $form_state);
+    $form['#validate'][] = 'bat_node_edit_after_build';
+    //after build doesn't work for now
+    
+  }
+}
+
+function bat_node_edit_after_build(&$form, &$form_state) {
+  $settings = bat_node_type_settings($form['#node']->type);
+
+    if ($settings->enabled and user_access('edit bat')  ) {
+      module_load_include('inc', 'bat', 'bat.admin');
+      drupal_add_js(drupal_get_path('module', 'bat') .'/js/bat.js');
+      drupal_add_js(drupal_get_path('module', 'bat') .'/js/apprise-1.5.full.js');
+      drupal_add_css(drupal_get_path('module', 'bat') .'/css/bat.css');      
+      
+      bat_fieldset_node_edit_form($form, $form_state);
+    }
+    
+   return $form; 
+}
+
+/**
+ * Saves block - region relations for a given node page.
+ */
+function bat_node_save_blocks_meta(&$node) {
+  $blocks = $node->bat['blocks'];
+  
+  foreach ($blocks as $bid => $block) {
+    $blocks[$bid] = (object) $block;
+  }
+  
+  foreach ($blocks as $bid => $block) {    
+    //only admin users can add content type blocks
+    if ($block->list_type == BLOCK_NODE_TYPE and user_access('administer bat') ) {
+      $node_type_blocks = bat_node_type_settings($node->type);      
+      $node_type_default_blocks = $node_type_blocks->default_blocks;
+      $key = $block->module . '_' . $block->delta;
+      //remove any duplicate blocks
+      $node_type_default_blocks[$block->bid] = $block;
+      
+      if($block->region == BLOCK_REGION_NONE) {//deleted content type block
+        unset($node_type_default_blocks[$block->bid]);  
+      }
+      
+      bat_save_node_type_settings($node->type, false, $node_type_default_blocks);
+      //change block type to descendant
+      $blocks[$bid]->list_type = BLOCK_NODE_DESCENDANT;
+      
+    }
+    
+    if ($block->list_type == BLOCK_MENU_CHILD) {
+      $node_menu_blocks = variable_get('bat_menu_blocks', array() );
+      //legacy fix
+      if(!empty($node_menu_blocks[$node->nid]) and !is_array($node_menu_blocks[$node->nid])) {
+        $node_menu_blocks[$node->nid] = array($node_menu_blocks[$node->nid]);
+      }
+      
+      if($block->region == BLOCK_REGION_NONE) {//deleted content type block
+        if(!$node_menu_blocks[$node->nid][$block->bid]) {
+          $parent_blocks = hms_get_node_parent_blocks($node);
+          //menu block is deleted from a child page - find the first parent
+          
+          foreach($parent_blocks as $parent_block) {
+            if($parent_block->bid == $block->bid) {
+              unset($node_menu_blocks[$parent_block->parent_nid][$block->bid]);  
+              break;
+            }
+          }
+        } else {
+          unset($node_menu_blocks[$node->nid][$block->module . '_' . $block->delta]);  
+        }
+      } else {
+        $node_menu_blocks[$node->nid][$block->module . '_' . $block->delta] = $block;
+      }
+      variable_set('bat_menu_blocks', $node_menu_blocks);
+      //find all menu children and add block
+      //change block type to descendant
+      $blocks[$bid]->list_type = BLOCK_MENU_DESCENDANT;
+    }
+  }
+  
+  $node->bat['blocks'] = $blocks ;
+}
+
+
+function bat_node_save_blocks($node) {
+  $blocks = $node->bat['blocks'];
+  $node_type_blocks = bat_node_type_settings($node->type);      
+  $node_type_default_blocks = $node_type_blocks->default_blocks;
+  
+  // Delete old entries for this node.
+  db_query("DELETE FROM {bat} WHERE nid = %d", $node->nid);
+  
+  //get menu blocks for this nid
+  $node_menu_blocks = hms_get_node_parent_blocks($node);
+
+  foreach ($blocks as $block) {
+    $block = (object) $block;
+    if(!$block->bid)
+      continue;
+    if($block->region != BLOCK_REGION_NONE and $block->list_type >= 100) { //descendant unchanged block no need to save
+      //check to see if weight has changed compared to content type block
+      //content type descendant
+      if($block->list_type == BLOCK_NODE_DESCENDANT) {
+        if($node_type_default_blocks[$block->bid]->weight == $block->weight) {
+          continue;
+        }
+      } elseif($block->list_type == BLOCK_MENU_DESCENDANT) {
+        
+        if($node_menu_blocks[$block->bid]->weight == $block->weight) {
+          continue;
+        }
+        
+      }
+      
+    }
+
+    
+    
+    if ( $block->region != BLOCK_REGION_NONE or ($block->region == BLOCK_REGION_NONE and $block->list_type >= 100 and ($node_type_default_blocks[$block->bid] or $node_menu_blocks[$block->bid] ) 
+    )) {
+      db_query("INSERT INTO {bat} (nid, bid, region, weight, list_type, module, delta, cache,title) VALUES (%d, '%s', '%s', %d, %d, '%s','%s', %d, '%s')", $node->nid, $block->bid, $block->region, $block->weight, $block->list_type, $block->module, $block->delta, $block->cache, $block->title);
+    }
+    
+  }
+  
+}
+
+/**
+ * Loads all blocks associated with the node of the given nid.
+ */
+function bat_node_load_blocks($node, $settings) {
+
+  
+
+  $blocks = array();
+
+    
+  $sql = "SELECT s.bid, s.list_type, s.region, s.weight, s.module, s.delta, s.cache
+    FROM {bat} s
+    WHERE s.nid = %d
+    ORDER BY s.weight";
+
+  $result = db_query($sql, $node->nid);
+  while ($block = db_fetch_object($result)) {
+    $blocks[$block->bid] = $block;
+  }
+  
+  
+  $nt_default_blocks = $settings->default_blocks;
+  
+  if(count($nt_default_blocks)) {
+    foreach($nt_default_blocks as $bid => $nt_block) {
+      $nt_block = (object)$nt_block;
+      if(!$blocks[$nt_block->bid]) {
+        $nt_block->list_type = BLOCK_NODE_DESCENDANT; //Mark as special blocks
+        $blocks[$bid] = $nt_block;
+      }  
+    }
+  }
+  
+  
+  
+  
+  if(!$node->nid and arg(3) != 'mlid') {
+    return $blocks;
+  } elseif(arg(3) == 'mlid') {
+    
+    $menu_href = $_GET['q'];
+    
+  } else {
+    $menu_href = 'node/' . $node->nid;
+  }
+  
+  
+  $node_menu_blocks = variable_get('bat_menu_blocks', array() ); 
+  $node_menu_nids = array_keys($node_menu_blocks);
+  $node->parent_nids = array($node->nid);
+  $parent_id = 1;
+  $previos_plid = 0;
+  
+  
+  
+  $count = 0;
+  while($parent_id != 0) {
+    
+    $menu_parent_plid = db_result(db_query("SELECT plid FROM {menu_links} WHERE link_path = '%s' AND plid > 0", $menu_href));
+    
+    
+    
+    
+    
+    if($menu_parent_plid and $menu_parent_plid != $previos_plid) {
+      $menu_parent_href = db_result(db_query("SELECT link_path FROM {menu_links} WHERE mlid=%d", $menu_parent_plid));
+      $menu_href = $menu_parent_href;
+      
+      $node->parent_nids[] = (int)str_replace('node/','', $menu_parent_href);
+      $previos_plid = $menu_parent_plid;
+    } else {
+      $parent_id = 0;
+    }
+    
+    $count++;
+    if($count > 10)
+      break;
+     
+  }
+    
+    
+    
+    foreach($node->parent_nids as $pnid) {
+      if(isset($node_menu_blocks[$pnid])) {
+        //legacy fix
+        if(!empty($node_menu_blocks[$pnid]) and !is_array($node_menu_blocks[$pnid])) {
+          $node_menu_blocks[$pnid] = array($node_menu_blocks[$pnid]);
+        }
+        foreach($node_menu_blocks[$pnid] as $node_menu_block) {
+          $block = $node_menu_block;
+          if(!$blocks[$block->bid]) {
+            $block->list_type = BLOCK_MENU_DESCENDANT; //Mark as special blocks
+            $blocks[$block->bid] = $block;    
+          }
+        }
+      }
+    }
+  //}
+  
+  return $blocks;
+}
+
+/**
+ * Implementation of hook_preprocess_page().
+ */
+function bat_preprocess_page(&$vars) {
+  //process on node pages only
+  if(arg(0) == 'node'){
+    bat_process_blocks($vars);
+
+  }
+  
+}
+//function bat_preprocess_node(&$vars) {
+function bat_process_blocks(&$vars) {
+  
+  static $done;
+  
+  
+  if($done)
+    return;
+  
+  if (!$vars['node'])
+    return;
+    
+/*   $settings = bat_node_type_settings($vars['node']->type);
+  if (!$settings->enabled)
+    return; */
+    
+  if(!$vars['node']->bat['blocks']) {
+    return; 
+    $done = 1;
+  }
+  
+    
+  $regions = array();
+
+  if (arg(2) == 'edit' && !$vars['node']->bat['settings']->display_node_edit) {
+    return;
+  }
+    
+  $blocks = $vars['node']->bat['blocks'];
+  
+  $node_type_regions = array_flip($vars['node']->bat['settings']->regions);  
+  
+  if(!count($blocks))
+    return;
+    
+    
+  $done = 1;  
+  
+    
+    // Walk through the blocks assigned to regions for this node.
+    foreach ($blocks as $bid => $block) {   
+    
+      if($block->region == BLOCK_REGION_NONE or !isset($node_type_regions[$block->region])) {
+        continue;
+      }
+      
+      // Create the array for the current region.
+      if (!isset($regions[$block->region])) {
+        $regions[$block->region] = array();
+      }
+      
+      
+      // Get either the cached contents for the block, or get it right from the module which defined the block.
+      //add exceptions to blocks here for now
+      $cid = null;
+      if($block->cache != BLOCK_NO_CACHE and ($block->module != 'cck_blocks' and $block->module != 'views') and ($block->module != 'hms_block' or $block->delta > 1 /* legacy fix */ ) ) { //make sure blocks are cached
+        
+        $block->cache = BLOCK_CACHE_GLOBAL;
+        $cid = 'hms-block' . $block->module . ":" . $block->delta;
+    
+      }
+      $always_cache = array(
+        'menu_block' => 1,
+        'hms_news' => 1,
+        //'hms_nodeblocks' => 1,
+        //'views' => 1
+      );  
+        
+      if($always_cache[$block->module]) { //always cache menu_block
+        $block->cache = BLOCK_CACHE_GLOBAL;
+        $cid = 'hms-block' . $block->module . ":" . $block->delta;
+      }
+      if(count($_GET) > 1) { //disable cache for dynamic blocks
+        $cid = null;
+      }
+      
+      if ($cid and $cache = cache_get($cid, 'cache_block')) {
+        $array = $cache->data;
+      }
+      else {
+        $array = module_invoke($block->module, 'block', 'view', $block->delta);
+        if (isset($cid)) {
+          // Store the returned block contents into the database.
+          cache_set($cid, $array, 'cache_block', CACHE_TEMPORARY);
+        }
+      }
+      
+      
+      
+      $title = $block->title;
+      if (!empty($title)) {
+        $array['subject'] = ($title == '<none>') ? '' : check_plain($title);
+      }       
+
+      if (isset($array) && is_array($array)) {
+        foreach ($array as $k => $v) {
+          $block->$k = $v;
+        }
+      }
+      
+      //Hide empty blocks
+      if(!$block->content)
+        continue;
+      // Theme the block.
+      $regions[$block->region]["{$block->module}_{$block->delta}"] = array('#value' => theme('block', $block), '#weight' => $block->weight);      
+    }
+    
+    
+    // Render the regions.
+    foreach ($regions as $region => $data) {
+    
+      // empty region
+      //$vars[$region] = '';
+        
+      // add node level blocks in region    
+      $vars[$region] .= drupal_render($data);
+      unset($data['#value']);
+    }
+    
+    
+    
+    
+    // Get Javascript code, needed for blocks with Javascript
+    $vars['scripts'] = drupal_get_js();
+    
+    // Get HEAD tags output, needed for blocks with own HEAD tags
+    $vars['head'] = drupal_get_html_head();     
+    
+    
+
+  
+}
+
+/**
+ * Helper function for getting the snipets configuration settings for a node type.
+ */
+function bat_node_type_settings($node_type) {
+  
+  $defaults = bat_defaults();
+  $default_blocks = variable_get("bat_default_blocks_" . $node_type, array());
+  $obj = variable_get("bat_" . $node_type, 
+    (object) array(    
+      'enabled' => TRUE, 
+      'display_node_edit' => TRUE, 
+      'regions' => $defaults['regions'],
+
+    )
+  );
+  if(is_array($default_blocks))
+    $obj->default_blocks = $default_blocks;
+  //global exclude blocks
+  $blocks_exclude = explode("," , BLOCK_GLOBAL_MODULE_EXCLUDE);
+  if(count($blocks_exclude) and count($obj->modules) ) {
+    foreach($blocks_exclude as $exclude) {
+      unset($obj->modules[$exclude]);
+    }
+  }
+  //global exclude regions
+  $obj->regions = array_flip($obj->regions);
+  unset($obj->regions['content_bottom']);
+  //unset($obj->regions['content_bottom']);  
+  return $obj;
+}
+function bat_save_node_type_settings($node_type, $block_settings = false, $default_blocks = null) {
+  if($block_settings) {
+  variable_set("bat_" . $node_type, 
+    $block_settings
+  );
+  }
+  if(isset($default_blocks) and $default_blocks !== null) {
+    variable_set("bat_default_blocks_" . $node_type, $default_blocks);    
+  }
+}
+
+function hms_get_node_parent_blocks($node) {
+  $menu_href = 'node/' . $node->nid;
+  $node_menu_blocks = variable_get('bat_menu_blocks', array() ); 
+  $node_menu_nids = array_keys($node_menu_blocks);
+  $node->parent_nids = array($node->nid);
+  $parent_id = 1;
+  $previos_plid = 0;
+  
+  
+  $count = 0;
+  while($parent_id != 0) {
+    
+    $menu_parent_plid = db_result(db_query("SELECT plid FROM {menu_links} WHERE link_path = '%s' AND plid > 0", $menu_href));
+    
+    
+    
+    if($menu_parent_plid and $menu_parent_plid != $previos_plid) { 
+      $menu_parent_href = db_result(db_query("SELECT link_path FROM {menu_links} WHERE mlid=%d", $menu_parent_plid));
+      $menu_href = $menu_parent_href;
+      $node->parent_nids[] = (int)str_replace('node/','', $menu_parent_href);
+      $previos_plid = $menu_parent_plid;
+    } else {
+      $parent_id = 0;
+    }
+    
+    $count++;
+    if($count > 10)
+      break;
+     
+  }
+    
+    
+  $blocks = array();  
+  foreach($node->parent_nids as $pnid) {
+    if(isset($node_menu_blocks[$pnid])) {
+      //legacy fix
+      if(!empty($node_menu_blocks[$pnid]) and !is_array($node_menu_blocks[$pnid])) {
+        $node_menu_blocks[$pnid] = array($node_menu_blocks[$pnid]);
+      }
+      foreach($node_menu_blocks[$pnid] as $node_menu_block) {
+        $block = $node_menu_block;
+        
+        if(!$blocks[$block->bid]) {
+          $block->list_type = BLOCK_MENU_DESCENDANT; //Mark as special blocks
+          $block->parent_nid = $pnid;
+          $blocks[$block->bid] = $block;    
+        }
+      }
+    }
+  }
+  return $blocks;
+}
+
+function bat_security_settings() {
+  drupal_add_css(drupal_get_path('module', 'bat') .'/js/jquery.crossSelect.css', 'module', 'all', FALSE);
+  drupal_add_js(drupal_get_path('module', 'bat') .'/js/jquery.crossSelect.js');
+  
+  $blocks = bat_hash();
+  
+  $blocks_exclude = explode("," , BLOCK_GLOBAL_MODULE_EXCLUDE);
+  if(count($blocks_exclude)) {
+    $blocks_exclude = array_flip($blocks_exclude);
+  }
+  
+  $block_options = array();
+  foreach( $blocks as $block ) {
+    if(isset($blocks_exclude[$block['module']])) {
+      continue;
+    }
+    //remove extra stuff views adds to admin titles
+    if($block['module'] == 'views') { 
+      $block['info'] = preg_replace("/^.*:/", "", $block['info']);
+    }
+    //$block_options[$block['module']][$block['module'] .'_'. $block['delta']] = $block['info'];
+    //$block_options[$block['module'] .'_'. $block['delta']] = '(' . $block['module'] . ') ' . $block['info'];
+    $block_options[$block['module'] .'_'. $block['delta']] = $block['info'];
+  }
+  
+  
+  $form['bat_admin_blocks'] = array(
+    '#type' => 'select',
+    '#title' => t('Blocks'),
+    '#description' => t('Select modules which should not be visible in block select dropdown and should not be deleteable'),
+    '#options' => $block_options,
+    '#multiple' => TRUE,
+    '#default_value' => variable_get('bat_admin_blocks', array()),
+  );
+  $form['bat_admin_blocks_js'] = array(
+    '#type' => 'markup',
+    '#value' => '<script>
+      $(document).ready(function(){
+        $("select").crossSelect({clickSelects: true});         
+      });
+    </script>
+    <style>
+      .description { clear: both; }
+    </style>
+    ',
+  );
+  
+  return system_settings_form($form);
+  
+} 
+
+/**
+ * Extra form elements for the node type form.
+ */
+function bat_node_type_form(&$form, &$form_state) {
+  
+  $settings = bat_node_type_settings($form['#node_type']->type);
+  
+  $module_options = array();
+  foreach (module_implements('block') as $module) {
+    $module_options[$module] = $module;
+  }
+  
+  $form['bat'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('HMS Blocks'),
+    '#collapsible' => TRUE,
+    '#group' => 'additional_settings',
+    '#collapsed' => !($settings->enabled),
+    '#attributes' => array('id' => 'hms-blocks-type-fieldset'),
+    '#access' => user_access('administer bat'),
+  );
+  $form['bat']['bat_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enable HMS Blocks functionality'),
+    '#description' => '',
+    '#default_value' => $settings->enabled,
+  );
+  $form['bat']['bat_display_node_edit'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Display blocks on node-edit pages'),
+    '#default_value' => $settings->display_node_edit,
+  );
+  /* $form['bat']['bat_multi'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Prevent multi-display of blocks on node'),
+    '#default_value' => $settings->multi,
+  );    */
+  $form['bat']['bat_regions'] = array(
+    '#type' => 'select',
+    '#title' => t('Enabled regions'),
+    '#description' => t('Choose which regions are available for the current content type'),
+    '#options' => system_region_list(variable_get('theme_default', 'garland')),
+    '#multiple' => TRUE,
+    '#default_value' => $settings->regions,
+  );
+  $form['bat']['bat_modules'] = array(
+    '#type' => 'select',
+    '#title' => t('Modules'),
+    '#description' => t('Here you can choose which modules to use for providing block contents.'),
+    '#options' => $module_options,
+    '#multiple' => TRUE,
+    '#default_value' => ($settings->modules ? $settings->modules : array() ),
+  );
+  
+
+   
+  $form['#node']->bat = array(); 
+  $form['#node']->bat['settings'] = $settings; 
+  
+  $form['#node']->bat['blocks'] = $settings->default_blocks; 
+  extract( bat_get_blocks($form, $form_state) ); 
+  
+  
+  
+  //$form['#submit'] = array('bat_node_type_form_submit');
+  
+  // Add CSS
+  drupal_add_css(drupal_get_path('module', 'block') .'/block.css', 'module', 'all', FALSE);
+
+  
+  
+  
+  
+}
+
+/**
+ * Custom submit callback for the node type form.
+ */
+function bat_node_type_form_submit($form, &$form_state) {
+  
+  
+  
+  //only save enabled blocks
+  
+  $settings = bat_node_type_settings($form_state['values']['type']);
+ 
+  
+  $settings = (object) array(
+    'enabled' => $form_state['values']['bat_enabled'],
+    'display_node_edit' => $form_state['values']['bat_display_node_edit'],
+    'multi' => $form_state['values']['bat_multi'],     
+    'regions' => $form_state['values']['bat_regions'],
+    'modules' => $form_state['values']['bat_modules']    
+  );
+  bat_save_node_type_settings($form_state['values']['type'], $settings);
+  
+  //clean vars saved by drupal
+  db_query("DELETE FROM variable where name LIKE 'bat_enabled%';");
+  db_query("DELETE FROM variable where name LIKE 'bat_display_node_edit%';");
+  db_query("DELETE FROM variable where name LIKE 'bat_multi%';");
+  db_query("DELETE FROM variable where name LIKE 'bat_modules%';");
+  db_query("DELETE FROM variable where name LIKE 'bat_regions_%';");  
+}
+
+/**
+ * Extra form elements for the node type form.
+ */
+function bat_fieldset_node_edit_form(&$form, &$form_state) {
+  
+  
+  
+  extract( bat_get_blocks($form, $form_state) ); 
+  
+  
+  
+  // Weights range from -delta to +delta, so delta should be at least half
+  // of the amount of blocks present. This makes sure all blocks in the same
+  // region get an unique weight.
+  $weight_delta = round(count($blocks) / 2);
+  //$weight_delta = round(count($blocks) / 4); //VAM changed to 4 to speed up page dl
+
+  $form['bat'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('HMS Blocks'),
+    '#collapsible' => TRUE,
+    '#tree' => TRUE,
+    '#group' => 'additional_settings',
+    //'#collapsed' => !($settings->enabled),
+    '#collapsed' => false,
+    '#collapsible' => false,
+    '#attributes' => array('id' => 'hms-blocks-fieldset'),
+    '#access' => user_access('edit bat'),
+  );
+  $form['bat']['blocks'] = array('#theme' => 'bat_fieldset');
+  $form['bat']['blocks']['settings'] = array('#type' => 'value', '#value' => $settings);
+  $form['bat']['blocks']['content_type'] = array('#type' => 'value', '#value' => $form['type']['#value']);
+  
+  
+  // Add CSS
+  drupal_add_css(drupal_get_path('module', 'block') .'/block.css', 'module', 'all', FALSE);
+
+  
+  
+  
+  foreach ($blocks as $i => $block) {
+    
+    $key = $block['module'] .'_'. $block['delta'];
+
+    // If the node_block's region isn't present in the settings regions,
+    // put it in the disabled area, otherwise it won't be visible anymore.
+    if (!in_array($node_blocks[$block['bid']]->region, $settings->regions)) {
+      $node_blocks[$block['bid']]->region = BLOCK_REGION_NONE;
+    }
+
+    $form['bat']['blocks'][$key]['module'] = array(
+      '#type' => 'value',
+      '#value' => $block['module'],
+    );
+    $form['bat']['blocks'][$key]['bid'] = array(
+      '#type' => 'value',
+      '#value' => $block['bid'],
+    );
+    $form['bat']['blocks'][$key]['delta'] = array(
+      '#type' => 'value',
+      '#value' => $block['delta'],
+    );
+    $form['bat']['blocks'][$key]['info'] = array(
+      '#value' => check_plain($block['info'])
+    );
+    /* $form['bat']['blocks'][$key]['theme'] = array(
+      '#type' => 'hidden',
+      '#value' => $theme_key
+    ); */
+    $form['bat']['blocks'][$key]['cache'] = array(
+      '#type' => 'value',
+      '#value' => $block['cache']
+    );
+    foreach(range(-count($blocks),count($blocks)) as $val) {
+      $delta[$val] = $val;
+    }
+    $form['bat']['blocks'][$key]['weight'] = array(
+      '#type' => 'weight',
+      //'#type' => 'select',
+      '#default_value' => $block['weight'],
+      '#delta' => $weight_delta,
+      //'#options' => $delta,
+    );
+    $form['bat']['blocks'][$key]['region'] = array(
+      '#type' => 'select',
+      '#default_value' => ($node_blocks[$block['bid']] ? $node_blocks[$block['bid']]->region : BLOCK_REGION_NONE),
+      '#options' => $block_regions,
+    );
+    $form['bat']['blocks'][$key]['list_type'] = array(
+      '#type' => 'select',
+      '#default_value' => ($node_blocks[$block['bid']] ? $node_blocks[$block['bid']]->list_type : 0),
+      '#options' => array(0=>0,1=>1,2=>2,100=>100,101=>101),
+    );
+  }
+  
+  
+  
+  
+  
+  
+}
+
+/**
+ * Helper function for sorting blocks on admin/build/block.
+ *
+ * Active blocks are sorted by region, then by weight.
+ * Disabled blocks are sorted by name.
+ */
+function _bat_compare($a, $b) {
+  // Sort by weight.
+  $weight = $a['weight'] - $b['weight'];
+  if ($weight) {
+    return $weight;
+  }
+  // Sort by title.
+  return strcmp($a['info'], $b['info']);
+}
+
+/**
+ * Process variables for block-admin-display.tpl.php.
+ *
+ * The $variables array contains the following arguments:
+ * - $form
+ *
+ * @see block-admin-display.tpl.php
+ * @see theme_block_admin_display()
+ */
+function template_preprocess_bat_fieldset(&$variables) {
+  global $theme_key;
+
+  $settings = $variables['form']['settings']['#value'];
+  
+  $theme_key = variable_get('theme_default', 'garland');  
+  $block_regions = system_region_list($theme_key);
+  $variables['block_regions'] = $block_regions + array(BLOCK_REGION_NONE => t('Disabled'));
+  $node_type = $variables['form']['content_type']['#value'];
+  
+  
+  $title = db_result(db_query("SELECT name FROM node_type WHERE type='%s'", $node_type));
+  $variables['content_type_friendly'] = $title;
+  
+  $variables['bat'] = array();
+  foreach (array_keys($block_regions) as $key) {
+    // Initialize an empty array for the region.
+    if (in_array($key, $settings->regions)) {
+      $variables['block_listing'][$key] = array();
+    }
+    else {
+      unset($variables['block_regions'][$key]);
+    }
+  }
+
+  // Initialize disabled blocks array.
+  $variables['block_listing'][BLOCK_REGION_NONE] = array();
+  $is_admin = user_access('administer bat');
+  $admin_blocks = variable_get('bat_admin_blocks', array());
+  
+  foreach (element_children($variables['form']) as $i) {
+    $block = &$variables['form'][$i];
+
+    // Only take form elements that are blocks.
+    if (isset($block['info'])) {
+      
+      // Fetch region for current block.
+      $region = $block['region']['#default_value'];
+
+      // Set special classes needed for table drag and drop.
+      $variables['form'][$i]['region']['#attributes']['class'] = 'block-region-select block-region-'. $region;
+      $variables['form'][$i]['weight']['#attributes']['class'] = 'block-weight block-weight-'. $region;
+
+      $variables['block_listing'][$region][$i]->row_class = isset($block['#attributes']['class']) ? $block['#attributes']['class'] : '';
+      $variables['block_listing'][$region][$i]->block_modified = isset($block['#attributes']['class']) && strpos($block['#attributes']['class'], 'block-modified') !== FALSE ? TRUE : FALSE;
+      $variables['block_listing'][$region][$i]->block_title =  drupal_render($block['info']);
+      $variables['block_listing'][$region][$i]->module =  $block['module']['#value'];
+      $variables['block_listing'][$region][$i]->block_bid =  $block['module']['#value'] . "_" . $block['delta']['#value'];
+      
+      //remove extra stuff views adds to admin titles
+      //TODO
+      //if($is_admin) {
+      if(1) {
+        if($block['module']['#value'] == 'views') { 
+          $variables['block_listing'][$region][$i]->block_title = preg_replace("/^.*:/", "", $variables['block_listing'][$region][$i]->block_title);
+        }
+      }
+      $variables['block_listing'][$region][$i]->region_select = drupal_render($block['region']) . drupal_render($block['theme']);
+      
+      
+      
+      
+      $variables['block_listing'][$region][$i]->weight_select = drupal_render($block['weight']);
+      
+      $variables['block_listing'][$region][$i]->list_type_select = drupal_render($block['list_type']);
+      
+      $variables['block_listing'][$region][$i]->printed = FALSE;
+      
+      if($is_admin) {
+        //if(isset($admin_blocks[$block['module']['#value'] .'_'. $block['delta']['#value']])) {
+          //$variables['block_listing'][$region][$i]->admin_block = true;
+          //continue;
+        //}
+        $variables['bat'][$i] = $variables['block_listing'][$region][$i];
+      } else {
+        if(isset($admin_blocks[$block['module']['#value'] .'_'. $block['delta']['#value']])) {
+          $variables['block_listing'][$region][$i]->admin_block = true;
+          continue;
+        }
+        if($admin_blocks[$block['module'] .'_'. $block['delta']])
+          continue;
+        $variables['bat'][$i] = $variables['block_listing'][$region][$i];
+        
+      }  
+    }
+  }
+
+  $variables['form_submit'] = drupal_render($variables['form']);
+}
+
+function bat_get_blocks(&$form, &$form_state) {
+  
+
+  // set default theme for retrieving regions and blocks
+  $theme_key = variable_get('theme_default', 'garland');  
+  $block_regions = system_region_list($theme_key) + array(BLOCK_REGION_NONE => '<'. t('none') .'>');
+  
+  
+  // If a node is submitted with the 'preview' button,
+  // the data can be collected using the form state.
+  // Othewise the stored nodes, or default values can be used.
+  if ($form_state['submitted'] or form_get_errors() ) {
+    
+    
+    
+    $node_blocks = array();
+    $settings = $form_state['values']['bat']['blocks']['settings'];
+    unset($form_state['values']['bat']['blocks']['settings']);
+    foreach ($form_state['values']['bat']['blocks'] as $node_block) {
+      $node_blocks[$node_block['bid']] = (object) $node_block;
+    }
+    
+    
+  }
+  else {
+    $settings = $form['#node']->bat['settings'];
+    $node_blocks = $form['#node']->bat['blocks'];
+  }
+  
+  
+  //change node_blocks bid to module_delta
+  $new_node_blocks = array();
+  if(count($node_blocks)) {
+    foreach($node_blocks as $node_block) {
+      $node_block->bid = $node_block->module . '_' . $node_block->delta;
+      $new_node_blocks[$node_block->bid] = $node_block;
+    }
+  }
+  $node_blocks = $new_node_blocks;
+  
+
+  // Fetch and sort blocks
+  $blocks = bat_hash();
+  
+  //change blocks bid to module_delta
+  
+  // Include the blocks array.
+  module_load_include('inc', 'block', 'block.admin');
+
+  // The disabled blocks need to be sorted by title instead of weight
+  // We will use this array to store all blocks which are not assigned to a snippet region.
+  // After collecting all unassigned blocks, we will sort this array by info key
+  // and merge it back to the blocks array.
+  $blocks_disabled = array();
+
+  // Loop through the blocks array to do some last cleanup stuff.
+  foreach ($blocks as $i => $block) {
+    // If the blocks for the current block's module has been disabled, unset it.
+    if (is_array($settings->modules) && !in_array($block['module'], $settings->modules)) {
+      unset($blocks[$i]);
+    }
+    else {
+      if (isset($node_blocks[$block['bid']])) {
+        // Overwrite the block weights here to make sure the list is ordered correctly.
+        $blocks[$i]['weight'] = $node_blocks[$block['bid']]->weight;
+      }
+      if (!in_array($block['region'], $settings->regions) && !in_array($node_blocks[$block['bid']]->region, $settings->regions)) {
+        // The block isn't assigned to a snippet region.
+        // Set the weight parameter to a fixed value in order to force sorting by info.
+        $block['weight'] = -10;
+        // Store the block in a temp array.
+        $blocks_disabled[] = $block;
+        // Unset the original block.
+        unset($blocks[$i]);
+      }
+    }
+  }
+  // Sort the enabled blocks first by weight, then by info.
+  usort($blocks, '_bat_compare');
+  // Sort the disabled blocks by info.
+  usort($blocks_disabled, '_bat_compare');
+  $blocks = array_merge($blocks, $blocks_disabled);
+
+  // Overwrite the block weights here to make sure the list is ordered correctly.
+  foreach ($blocks as $i => $block) {
+    if (isset($node_blocks[$block['bid']])) {
+      $blocks[$i]['weight'] = $node_blocks[$block['bid']]->weight;
+    }
+    if (isset($node_blocks[$block['bid']])) {
+      $blocks[$i]['list_type'] = $node_blocks[$block['bid']]->list_type;
+    }
+  }
+  usort($blocks, '_bat_compare');
+
+  
+
+  // Remove unused regions for this node type.
+  
+  foreach (array_keys($block_regions) as $key) {
+    if (!in_array($key, $settings->regions) && $key !== BLOCK_REGION_NONE) {
+      unset($block_regions[$key]);
+    }
+  }
+  
+  
+  
+  return array(
+     'blocks' => $blocks, 
+     'block_regions' => $block_regions,
+     'settings' => $settings,
+     'node_blocks' => $node_blocks,
+  );
+}
+
+function bat_hash() {
+  $blocks = array();
+  // Valid region names for the theme. 
+
+  foreach (module_list() as $module) {
+    $module_blocks = module_invoke($module, 'block', 'list');
+    if ($module_blocks) {
+      foreach ($module_blocks as $delta => $block) {
+        
+          // If it's a new block, add identifiers.
+          $block['module'] = $module;
+          $block['delta']  = $delta;
+          //$block['theme']  = $theme_key;
+          $block['bid']  = $module . '_' . $delta;
+          
+          // Add defaults and save it into the database.
+          $block['region'] = $block['status'] ? $block['region'] : BLOCK_REGION_NONE;
+          // Add to the list of blocks we return.
+          $blocks[] = $block;
+                
+      }
+    }
+  }
+
+  // Remove blocks that are no longer defined by the code from the database.
+
+  return $blocks;
+}

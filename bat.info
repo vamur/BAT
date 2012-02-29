@@ -1,0 +1,5 @@
+name = "BAT"
+description = "Block Assignment Tool"
+dependencies[] = node
+core = "6.x"
+package = "Other"

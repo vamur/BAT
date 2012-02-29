@@ -1,0 +1,151 @@
+<?php
+
+/**
+ * @file
+ * Installation file and schema definition for
+ * bat.module
+ *
+ * @author skilip
+ */
+
+/**
+ * Implement hook_schema().
+ * @link http://api.drupal.org/api/function/hook_schema/6
+ */
+function bat_schema() {
+  $schema['bat'] = array(
+    'description' => 'The base table for bat.module.',
+    'fields' => array(
+      'nid' => array(
+        'description' => 'The primary identifier for a node.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'bid' => array(
+        'description' => 'The primary identifier for a block.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+      ),
+      'region' => array(
+        'description' => 'The region in which to place the block.',
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'weight' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => FALSE,
+      ),
+      'list_type' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => FALSE,
+      ),
+      'module' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'delta' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'cache' => array(
+        'type' => 'int',
+        'length' => 4,
+        'not null' => TRUE,
+        'unsigned' => FALSE,
+      ),
+       'title' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'indexes' => array(
+      'nid' => array('nid'),
+    ),
+  );
+  
+  $schema['bat_wysiwyg'] = array(
+    'description' => 'The base table for bat.module.',
+    'fields' => array(
+      'wid' => array(
+        'description' => 'The primary identifier for the wysiwyg block.',
+        'type' => 'int',
+        'not null' => TRUE,
+      ),
+      'content' => array(
+        'description' => 'WYSIWYG content.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'css_class' => array(
+        'type' => 'varchar',
+        'length' => 256,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'hide_title' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+      ),
+      'title' => array(
+        'type' => 'varchar',
+        'length' => 256,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'admin_title' => array(
+        'type' => 'varchar',
+        'length' => 256,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'uid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 0,
+      )
+    ),
+    'indexes' => array(
+      'wid' => array('wid'),
+    ),
+  );
+
+  return $schema;
+}
+
+/**
+ * Implement hook_install().
+ * @link http://api.drupal.org/api/function/hook_install/6
+ */
+function bat_install() {
+  // Install the schema for bat.
+  drupal_install_schema('bat');
+  drupal_install_schema('bat_wysiwyg');
+}
+
+/**
+ * Implement hook_uninstall().
+ * @link http://api.drupal.org/api/function/hook_uninstall/6
+ */
+function bat_uninstall() {
+  // Uninstall the schema for bat.
+  drupal_uninstall_schema('bat');
+  drupal_uninstall_schema('bat_wysiwyg');
+
+  // Delete any variables set by this module.
+  db_query("DELETE FROM {variable} WHERE name LIKE 'bat_%'");
+}
